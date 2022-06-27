@@ -848,21 +848,38 @@ func (o *orm) PipelineRunsByJobsIDs(ids []int32) (runs []pipeline.Run, err error
 // FindPipelineRunIDsByJobID fetches the ids of pipeline runs for a job.
 func (o *orm) FindPipelineRunIDsByJobID(jobID int32, offset, limit int) (ids []int64, err error) {
 	err = o.q.Transaction(func(tx pg.Queryer) error {
-		stmt := `
-SELECT pipeline_runs.id
-FROM pipeline_runs
-WHERE pipeline_runs.pipeline_spec_id = (SELECT jobs.pipeline_spec_id FROM JOBS WHERE jobs.id = $1)
-ORDER BY pipeline_runs.created_at DESC, pipeline_runs.id DESC
-OFFSET $2
-LIMIT $3
-`
-		if err = tx.Select(&ids, stmt, jobID, offset, limit); err != nil {
-			return errors.Wrap(err, "error loading runs")
+		stmt := `SELECT p.id FROM pipeline_runs AS p
+					WHERE p.pipeline_spec_id = (SELECT jobs.pipeline_spec_id FROM jobs WHERE jobs.id = $1)
+						AND id >= $4 AND id <= $5
+					ORDER BY p.created_at DESC, p.id DESC OFFSET $2 LIMIT $3`
+		var res sql.NullInt64
+
+		if err = tx.Get(&res, "SELECT MAX(id) FROM pipeline_runs"); err != nil {
+			return errors.Wrap(err, "error while loading runs")
+		} else if !res.Valid {
+			// MAX() will return NULL if there are no rows in table
+			return nil
+		}
+
+		maxID := res.Int64
+
+		// Only search the most recent n jobs (whether deleted or not), starting with n = 1000 and
+		//  doubling only if we still need more.  Without this, large tables can result in the UI
+		//  becoming unusably slow, continuously flashing, or timing out.  The ORDER BY in
+		//  this query requires a sort of all runs matching jobID, so we restrict it to the
+		//  range minID <-> maxID.
+
+		for n := int64(1000); maxID > 0 && len(ids) < limit; {
+			minID := maxID - n
+			if err = tx.Select(&ids, stmt, jobID, offset, limit, minID, maxID); err != nil {
+				return errors.Wrap(err, "error loading runs")
+			}
+			maxID = minID - 1
+			n *= 2
 		}
 
 		return err
 	})
-
 	return ids, errors.Wrap(err, "PipelineRunsByJobIDs failed")
 }
 

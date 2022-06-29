@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity >= 0.4.19;
+pragma solidity >=0.4.19;
 
 import { BufferChainlink } from "./BufferChainlink.sol";
 
